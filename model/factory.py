@@ -1,4 +1,5 @@
-from langchain_dashscope import ChatDashScope, DashScopeEmbeddings
+from langchain_community.embeddings import DashScopeEmbeddings
+from langchain_community.chat_models.tongyi import ChatTongyi
 from config import settings
 from utils import get_logger, retry_decorator
 
@@ -8,7 +9,7 @@ logger = get_logger(__name__)
 def get_llm():
     """获取大模型实例：通义千问"""
     logger.info(f"初始化LLM模型: {settings.LLM_MODEL_NAME}")
-    llm = ChatDashScope(
+    llm = ChatTongyi(
         model_name=settings.LLM_MODEL_NAME,
         dashscope_api_key=settings.DASHSCOPE_API_KEY,
         temperature=0.1

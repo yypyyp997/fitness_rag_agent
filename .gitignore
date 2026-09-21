@@ -2,6 +2,8 @@
 .venv/
 venv/
 env/
+
+# Python编译缓存
 __pycache__/
 *.pyc
 *.pyo
@@ -17,9 +19,8 @@ chroma_db/
 logs/
 *.log
 
-# 缓存文件
+# processed缓存文件：pkl、txt都忽略
 data/processed/
-*.cache
 
 # IDE配置
 .idea/

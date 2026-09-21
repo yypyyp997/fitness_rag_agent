@@ -5,7 +5,9 @@ from utils import get_logger
 logger = get_logger(__name__)
 
 def ensure_dir(path: str):
-    """如果文件夹不存在，自动创建文件夹"""
+    """如果文件夹不存在，自动创建文件夹；空路径直接跳过"""
+    if not path:
+        return
     if not os.path.exists(path):
         os.makedirs(path)
         logger.info(f"创建目录: {path}")
