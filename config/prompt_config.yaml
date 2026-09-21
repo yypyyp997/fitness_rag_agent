@@ -1,0 +1,11 @@
+# 提示词文件统一放 prompts/ 目录，这里只登记文件名：
+# 以后做提示词消融实验，换文件名或改 md 内容即可，不用动代码
+prompt_files:
+  rag_prompt: rag_prompt.md
+  agent_system: agent_system.md
+  tool_desc: tool_desc.md
+
+# ===== 大模型生成参数 =====
+# 消融实验要调 temperature 直接改这里
+generation:
+  temperature: 0.1
