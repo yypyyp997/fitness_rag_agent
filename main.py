@@ -28,7 +28,7 @@
 # print([t.name for t in get_tools()])          # ['rag_search', 'calculator', 'search_web']
 # print(calculator.invoke({'expression': '(80 * 3) / 2'}))   # 计算结果: 120.0
 import os
-
+from agent import run_orchestrator
 from config import settings
 
 def _ensure_vector_store():
@@ -76,6 +76,11 @@ def main():
             print(f"出错了：{e}\n（详细日志见 logs/run.log）")
             continue
         print(f"\n{answer}")
-
+    r = run_orchestrator('帮我精确计算 (80*3)/2');
+    print('路由:', r['route'], '| 工具:', r['tools_used']);
+    print(r['answer'])
+    r = run_orchestrator('深蹲的注意事项有哪些？');
+    print('路由:', r['route'], '| 工具:', r['tools_used']);
+    print(r['answer'][:200])
 if __name__ == "__main__":
     main()
