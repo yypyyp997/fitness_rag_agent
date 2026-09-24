@@ -1,6 +1,6 @@
-"""提交点7
+"""LangGraph 工作流编排。
 
-CP6 的 run_agent 是"万能但较重"的单体Agent：任何问题都要走完整的
+之前的run_agent 是"万能但较重"的单体Agent：任何问题都要走完整的
 思考-行动循环（选工具→调工具→再思考...），简单问题也要2次以上模型调用。
 
 本模块在其上加一层 LangGraph StateGraph 编排，按问题难度分流：
@@ -13,6 +13,7 @@ LangGraph 三个核心概念在这里的落点：
 - runtime context：Agent支路把 tools_used 从中间件带回编排层（提交点9评估用）
 """
 from typing import TypedDict
+import time
 
 from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
@@ -27,7 +28,7 @@ from utils import get_logger
 
 logger = get_logger(__name__)
 
-# 路由提示词：属于内部结构逻辑，不随业务调参，放代码常量（想调参再挪去prompts/目录）
+# 路由提示词：属于内部结构逻辑，不随业务调参，放代码常量（想调节再挪去prompts/目录）
 _ROUTER_PROMPT = (
     "你是问题路由器，判断用户问题走哪条处理路径，只回答一个单词：\n"
     "- direct：简单健身知识问答，查本地知识库就能回答"
@@ -121,7 +122,7 @@ def build_orchestrator():
     return _orchestrator_cache
 
 def run_orchestrator(question: str) -> dict:
-    """编排统一入口（提交点8的main.py/app.py、提交点9评估都调它）
+    """编排统一入口（提交点8的main.py、提交点9评估都调它）
 
     Returns:
         dict: {"answer": 最终回答, "route": 走的支路, "tools_used": 工具使用统计}
@@ -140,3 +141,82 @@ def run_orchestrator(question: str) -> dict:
         "route": result.get("route", ""),
         "tools_used": result.get("tools_used", []),
     }
+
+def _stream_dashscope(prompt: str):
+    """用dashscope原生SDK流式生成（增量输出）。
+
+    为什么不用ChatTongyi.stream：实测它把整个流聚合成1块吐出（250字回答
+    只返回1个chunk），界面看不到打字机效果；原生SDK同问题返回52个增量块。
+
+    Yields:
+        str: 增量文本块
+    """
+    import dashscope
+    from config import settings
+
+    resp = dashscope.Generation.call(
+        model=settings.LLM_MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        result_format="message",
+        stream=True,
+        incremental_output=True,
+        api_key=settings.DASHSCOPE_API_KEY,
+    )
+    for chunk in resp:
+        try:
+            delta = chunk.output.choices[0].message.content or ""
+        except Exception:
+            delta = ""
+        if delta:
+            yield delta
+
+def stream_orchestrator(question: str):
+    """流式编排入口：逐步产出回答文本块，最后产出一个元信息dict。
+
+    与 run_orchestrator 的分工：
+    - run_orchestrator：阻塞式拿完整结果（命令行/评估用，走LangGraph图）
+    - stream_orchestrator：边生成边输出（Streamlit界面用，体验优先）
+
+    用法：
+        for chunk in stream_orchestrator(q):
+            if isinstance(chunk, dict):
+                meta = chunk   # 最后一个产出：含 route / tools_used / answer
+            else:
+                show(chunk)    # 文本块，逐步拼接展示
+
+    说明：两条支路都改用dashscope原生流式（ChatTongyi.stream实测会整块聚合）；
+    流式路径不做token统计（评估模块走非流式路径，token数据完整）。
+    """
+    question = (question or "").strip()
+    if not question:
+        yield {"answer": "请输入问题", "route": "none", "tools_used": []}
+        return
+
+    # 路由判断本身不流式（输出只有一个单词，流式无意义），约0.5秒
+    route = route_question({"question": question})["route"]
+
+    if route == "direct":
+        # RAG直答支路：检索一次 + dashscope原生流式生成
+        context = rag_search.invoke({"query": question})
+        prompt = get_prompt("rag_prompt").format(context=context, question=question)
+        parts = []
+        for delta in _stream_dashscope(prompt):
+            parts.append(delta)
+            yield delta
+        yield {"route": "direct", "tools_used": ["rag_search"], "answer": "".join(parts)}
+    else:
+        # Agent支路：先完整跑Agent循环（拿工具统计和最终回答），再把最终回答
+        # 按小段切分逐步吐出——工具调用轮次本来就没有可流式展示的正文
+        result = run_orchestrator(question)
+        answer = result["answer"]
+        # 按标点切句渐进展示，每块约20字，模拟真实生成节奏
+        step = 20
+        for i in range(0, len(answer), step):
+            piece = answer[i:i + step]
+            yield piece
+            time.sleep(0.03)
+        yield {
+            "route": result["route"],
+            "tools_used": result["tools_used"],
+            "answer": answer,
+        }

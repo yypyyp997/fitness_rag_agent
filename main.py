@@ -1,34 +1,5 @@
-# # # import os
-# # # from rag import prepare_chunks, build_vector_store, get_vector_store, get_retriever
-# # # from config import settings
-# # #
-# # # # 1. 向量库已存在则直接加载（避免重复向量化）；否则先取chunk再构建
-# # # if os.path.exists(settings.CHROMA_PERSIST_DIR) and os.listdir(settings.CHROMA_PERSIST_DIR):
-# # #     print("检测到已有向量库，跳过构建")
-# # #     db = get_vector_store()
-# # # else:
-# # #     # 获取chunk（自动走processed缓存）
-# # #     chunks = prepare_chunks()
-# # #     # 构建向量库并持久化（需要重建时手动删除 chroma_db 目录）
-# # #     db = build_vector_store(chunks)
-# # #
-# # # # 2. 获取检索器
-# # # retriever = get_retriever()
-# # #
-# # # # 3. 测试召回
-# # # res = retriever.invoke("深蹲的注意事项")
-# # # print(res)
-# # from prompts import get_prompt, get_generation_params
-# # from model.factory import get_llm
-# # print(get_prompt('rag_prompt')[:50])
-# # print(get_generation_params())
-# # llm = get_llm()   # 构造成功即可，不用调用
-# # print('LLM OK')
-# from tools import get_tools, calculator
-# print([t.name for t in get_tools()])          # ['rag_search', 'calculator', 'search_web']
-# print(calculator.invoke({'expression': '(80 * 3) / 2'}))   # 计算结果: 120.0
 import os
-from agent import run_orchestrator
+
 from config import settings
 
 def _ensure_vector_store():
@@ -42,9 +13,10 @@ def _ensure_vector_store():
 
 WELCOME = """
 ==================================================
-   健身知识问答 Agent（提交点6：命令行验证版）
+   健身知识问答 Agent（提交点8：编排入口版）
 --------------------------------------------------
-   可问：知识库问题 / 训练计划 / 数学计算
+   简单知识问答走RAG直答，复杂任务走完整Agent循环
+   可问：知识库问题 / 训练计划 / 数学计算 / 联网资讯
    输入 exit / quit / 退出 可结束对话
 ==================================================
 """
@@ -52,8 +24,8 @@ WELCOME = """
 def main():
     _ensure_vector_store()
 
-    # 延迟导入：等向量库就绪后再初始化Agent（rag_search依赖检索器）
-    from agent import run_agent
+    # 延迟导入：等向量库就绪后再加载编排工作流（rag_search依赖检索器）
+    from agent import run_orchestrator
 
     print(WELCOME)
     while True:
@@ -69,18 +41,17 @@ def main():
             print("再见！")
             break
 
-        print("\nAgent思考中...\n")
+        print("\n处理中...\n")
         try:
-            answer = run_agent(question)
+            result = run_orchestrator(question)
         except Exception as e:
             print(f"出错了：{e}\n（详细日志见 logs/run.log）")
             continue
-        print(f"\n{answer}")
-    r = run_orchestrator('帮我精确计算 (80*3)/2');
-    print('路由:', r['route'], '| 工具:', r['tools_used']);
-    print(r['answer'])
-    r = run_orchestrator('深蹲的注意事项有哪些？');
-    print('路由:', r['route'], '| 工具:', r['tools_used']);
-    print(r['answer'][:200])
+
+        # 回答前先展示路由元信息，直观呈现编排层的分流决策
+        tools = "、".join(result["tools_used"]) if result["tools_used"] else "无"
+        print(f"【路由: {result['route']} | 工具: {tools}】\n")
+        print(result["answer"])
+
 if __name__ == "__main__":
     main()
