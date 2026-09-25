@@ -1,0 +1,58 @@
+[
+  {
+    "id": 1,
+    "question": "深蹲的注意事项有哪些？",
+    "expect_route": "direct",
+    "expect_tools": ["rag_search"],
+    "expect_keywords": ["膝盖", "呼吸"]
+  },
+  {
+    "id": 2,
+    "question": "平板卧推时肩胛骨要怎么处理？",
+    "expect_route": "direct",
+    "expect_tools": ["rag_search"],
+    "expect_keywords": ["收紧", "卧推凳"]
+  },
+  {
+    "id": 3,
+    "question": "减脂期每天的热量缺口多少比较合适？",
+    "expect_route": "direct",
+    "expect_tools": ["rag_search"],
+    "expect_keywords": ["300", "500"]
+  },
+  {
+    "id": 4,
+    "question": "增肌期每天每公斤体重应该摄入多少蛋白质？",
+    "expect_route": "direct",
+    "expect_tools": ["rag_search"],
+    "expect_keywords": ["1.6", "2.2"]
+  },
+  {
+    "id": 5,
+    "question": "帮我精确计算 (80*3)/2",
+    "expect_route": "agent",
+    "expect_tools": ["calculator"],
+    "expect_keywords": ["120"]
+  },
+  {
+    "id": 6,
+    "question": "帮我制定一份增肌训练计划",
+    "expect_route": "agent",
+    "expect_tools": ["rag_search"],
+    "expect_keywords": ["组"]
+  },
+  {
+    "id": 7,
+    "question": "硬拉时腰部出现刺痛应该怎么办？",
+    "expect_route": "direct",
+    "expect_tools": ["rag_search"],
+    "expect_keywords": ["停止"]
+  },
+  {
+    "id": 8,
+    "question": "训练后肌肉酸痛正常吗？酸痛代表训练有效吗？",
+    "expect_route": "direct",
+    "expect_tools": ["rag_search"],
+    "expect_keywords": ["24", "48"]
+  }
+]

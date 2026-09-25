@@ -31,3 +31,6 @@ data/processed/
 # 操作系统文件
 .DS_Store
 Thumbs.db
+
+# 评估报告（运行产物，不进版本库）
+evaluation/results/
