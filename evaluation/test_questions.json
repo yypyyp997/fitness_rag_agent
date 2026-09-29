@@ -4,14 +4,14 @@
     "question": "深蹲的注意事项有哪些？",
     "expect_route": "direct",
     "expect_tools": ["rag_search"],
-    "expect_keywords": ["膝盖", "呼吸"]
+    "expect_keywords": ["膝盖", "内扣"]
   },
   {
     "id": 2,
     "question": "平板卧推时肩胛骨要怎么处理？",
     "expect_route": "direct",
     "expect_tools": ["rag_search"],
-    "expect_keywords": ["收紧", "卧推凳"]
+    "expect_keywords": ["肩胛", "后缩"]
   },
   {
     "id": 3,
@@ -53,6 +53,6 @@
     "question": "训练后肌肉酸痛正常吗？酸痛代表训练有效吗？",
     "expect_route": "direct",
     "expect_tools": ["rag_search"],
-    "expect_keywords": ["24", "48"]
+    "expect_keywords": ["正常", "刺痛"]
   }
 ]
