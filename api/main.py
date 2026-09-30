@@ -1,3 +1,4 @@
+# api/main.py
 """FastAPI服务层：把编排层封装成HTTP接口。
 
 设计原则：
@@ -52,7 +53,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Fitness RAG Agent API",
     description="健身领域RAG智能体：知识问答（RAG直答）+ 复杂任务（ReAct Agent）双支路服务",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -67,12 +68,15 @@ def health():
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
-    """非流式问答：一次性返回完整结果（适合后端调用、评估、批处理）"""
+    """非流式问答：一次性返回完整结果。
+
+    session_id 传入即启用多轮记忆（同会话可追问）；不传为单轮问答。
+    """
     from agent import run_orchestrator
 
     start = time.perf_counter()
     try:
-        result = run_orchestrator(req.question)
+        result = run_orchestrator(req.question, session_id=req.session_id)
     except Exception as e:
         logger.error(f"编排执行失败: {e}")
         raise HTTPException(status_code=502, detail=f"上游模型/检索服务异常: {e}") from e
@@ -84,28 +88,31 @@ def chat(req: ChatRequest):
         latency_sec=latency,
     )
 
+@app.delete("/api/sessions/{session_id}")
+def clear_session(session_id: str):
+    """清空指定会话的多轮记忆（前端"清空对话"按钮调它）"""
+    from agent import memory
+    deleted = memory.clear_session(session_id)
+    return {"session_id": session_id, "deleted": deleted}
+
 @app.post("/api/chat/stream")
 def chat_stream(req: ChatRequest):
-    """流式问答（SSE协议）。
+    """流式问答（SSE协议），支持session_id多轮记忆。
 
     事件格式（text/event-stream）：
         event: delta   data: {"text": "增量文本"}      （多次，逐块）
-        event: meta    data: {"route": ..., "tools_used": [...], "latency_sec": ...}（最后1次）
+        event: meta    data: {"route": ..., "tools_used": [...], "session_id": ...}（最后1次）
         event: done    data: [DONE]
-
-    前端消费示例（JS）：
-        const es = new EventSource(...)  // 或 fetch + ReadableStream 解析
-        es.addEventListener('delta', e => append(JSON.parse(e.data).text))
-        es.addEventListener('meta',  e => showMeta(JSON.parse(e.data)))
     """
     from agent import stream_orchestrator
 
     def event_gen():
         start = time.perf_counter()
         try:
-            for chunk in stream_orchestrator(req.question):
+            for chunk in stream_orchestrator(req.question, session_id=req.session_id):
                 if isinstance(chunk, dict):
-                    meta = {**chunk, "latency_sec": round(time.perf_counter() - start, 2)}
+                    meta = {**chunk, "latency_sec": round(time.perf_counter() - start, 2),
+                            "session_id": req.session_id}
                     yield f"event: meta\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
                 else:
                     yield f"event: delta\ndata: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"

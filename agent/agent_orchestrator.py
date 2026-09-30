@@ -11,6 +11,9 @@ LangGraph 三个核心概念在这里的落点：
 - StateGraph(OrchestratorState)：定义状态结构，节点返回局部更新自动合并
 - add_conditional_edges：路由节点按 route 字段动态选择下一个节点
 - runtime context：Agent支路把 tools_used 从中间件带回编排层（提交点9评估用）
+
+多轮记忆（P0迭代）：session_id 可选参数——传入即注入最近6条历史到
+路由/直答/Agent循环三处，并落库；不传则与单轮版行为完全一致。
 """
 from typing import TypedDict
 import time
@@ -19,6 +22,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
 
 from agent.callbacks import TokenUsageHandler
+from agent.memory import format_history_block, get_recent_messages
 from agent.middleware import postprocess_output, preprocess_input
 from agent.react_agent import get_agent
 from model.factory import get_llm
@@ -41,19 +45,22 @@ _ROUTER_PROMPT = (
     "用户问题："
 )
 
-
 class OrchestratorState(TypedDict):
-    """工作流状态：问题进，回答+路由+工具统计出"""
+    """工作流状态：问题进，回答+路由+工具统计出（history为多轮记忆注入，可选）"""
     question: str
     route: str
     answer: str
     tools_used: list
+    history: list
 
 def route_question(state: OrchestratorState) -> dict:
     """路由节点：LLM判断走哪条支路，调用失败兜底走Agent（通用路径不会答不了）"""
     question = state["question"]
+    # 多轮上下文：追问（如"那硬拉呢？"）单独看无法路由，把近期对话带入判定
+    history = state.get("history") or []
+    route_prompt = format_history_block(history) + _ROUTER_PROMPT if history else _ROUTER_PROMPT
     try:
-        resp = get_llm().invoke(_ROUTER_PROMPT + question)
+        resp = get_llm().invoke(route_prompt + question)
         text = resp.content.strip().lower() if isinstance(resp.content, str) else ""
         route = "direct" if "direct" in text else "agent"
     except Exception as e:
@@ -65,13 +72,15 @@ def route_question(state: OrchestratorState) -> dict:
 def direct_rag_answer(state: OrchestratorState) -> dict:
     """RAG直答支路：检索 -> 按消融胜出提示词单次生成（无Agent循环，快且省token）"""
     question = state["question"]
+    # 历史块拼在检索模板前：回答既要基于检索内容，也要衔接上文（"那减脂期呢"）
+    history_block = format_history_block(state.get("history") or [])
 
     # 复用CP5的rag_search工具做检索（带来源标注的统一格式）
     context = rag_search.invoke({"query": question})
 
     # rag_prompt.md 里有 {context} 和 {question} 两个占位符
     prompt = get_prompt("rag_prompt").format(context=context, question=question)
-    resp = get_llm().invoke(prompt)
+    resp = get_llm().invoke(history_block + prompt if history_block else prompt)
     answer = resp.content.strip() if isinstance(resp.content, str) else str(resp.content)
 
     logger.info(f"RAG直答完成，回答长度{len(answer)}字")
@@ -83,10 +92,19 @@ def agent_answer(state: OrchestratorState) -> dict:
     if not question:
         return {"answer": "请输入问题", "tools_used": []}
 
+    # 历史转成消息列表：Agent循环里模型能看到上文（Human/AIMessage交替）
+    from langchain_core.messages import AIMessage
+    history_messages = []
+    for m in (state.get("history") or []):
+        if m["role"] == "user":
+            history_messages.append(HumanMessage(content=m["content"]))
+        else:
+            history_messages.append(AIMessage(content=m["content"]))
+
     # 自建context字典传入：monitor_tool中间件会向它写入tools_used（按引用共享）
     ctx = {"tools_used": []}
     result = get_agent().invoke(
-        {"messages": [HumanMessage(content=question)]},
+        {"messages": history_messages + [HumanMessage(content=question)]},
         context=ctx,
         config={"callbacks": [TokenUsageHandler()]},
     )
@@ -124,8 +142,11 @@ def build_orchestrator():
         logger.info("LangGraph编排工作流构建完成")
     return _orchestrator_cache
 
-def run_orchestrator(question: str) -> dict:
+def run_orchestrator(question: str, session_id: str | None = None) -> dict:
     """编排统一入口（提交点8的main.py、提交点9评估都调它）
+
+    兼容说明：session_id 为 None 时行为与单轮版完全一致（不读写记忆库），
+    main.py / evaluation 等旧调用方零改动。
 
     Returns:
         dict: {"answer": 最终回答, "route": 走的支路, "tools_used": 工具使用统计}
@@ -134,7 +155,17 @@ def run_orchestrator(question: str) -> dict:
     if not question:
         return {"answer": "请输入问题", "route": "none", "tools_used": []}
 
-    result = build_orchestrator().invoke({"question": question})
+    # 多轮记忆：有session_id时取最近6条历史注入三处（路由/直答/Agent循环），
+    # 并在回答成功后落库（失败不污染历史）
+    from agent import memory
+    history = memory.get_recent_messages(session_id) if session_id else []
+    result = build_orchestrator().invoke({"question": question, "history": history})
+    if session_id:
+        memory.append_message(session_id, "user", question)
+        memory.append_message(
+            session_id, "assistant", result.get("answer", ""),
+            route=result.get("route"), tools_used=result.get("tools_used"),
+        )
     logger.info(
         f"编排完成：路由={result.get('route')} "
         f"工具={result.get('tools_used')} 回答{len(result.get('answer', ''))}字"
@@ -173,7 +204,7 @@ def _stream_dashscope(prompt: str):
         if delta:
             yield delta
 
-def stream_orchestrator(question: str):
+def stream_orchestrator(question: str, session_id: str | None = None):
     """流式编排入口：逐步产出回答文本块，最后产出一个元信息dict。
 
     与 run_orchestrator 的分工：
@@ -196,21 +227,31 @@ def stream_orchestrator(question: str):
         return
 
     # 路由判断本身不流式（输出只有一个单词，流式无意义），约0.5秒
-    route = route_question({"question": question})["route"]
+    from agent import memory
+    history = memory.get_recent_messages(session_id) if session_id else []
+    route = route_question({"question": question, "history": history})["route"]
 
     if route == "direct":
         # RAG直答支路：检索一次 + dashscope原生流式生成
         context = rag_search.invoke({"query": question})
         prompt = get_prompt("rag_prompt").format(context=context, question=question)
+        history_block = format_history_block(history)
+        if history_block:
+            prompt = history_block + prompt
         parts = []
         for delta in _stream_dashscope(prompt):
             parts.append(delta)
             yield delta
-        yield {"route": "direct", "tools_used": ["rag_search"], "answer": "".join(parts)}
+        answer = "".join(parts)
+        if session_id:
+            memory.append_message(session_id, "user", question)
+            memory.append_message(session_id, "assistant", answer,
+                                  route="direct", tools_used=["rag_search"])
+        yield {"route": "direct", "tools_used": ["rag_search"], "answer": answer}
     else:
         # Agent支路：先完整跑Agent循环（拿工具统计和最终回答），再把最终回答
         # 按小段切分逐步吐出——工具调用轮次本来就没有可流式展示的正文
-        result = run_orchestrator(question)
+        result = run_orchestrator(question, session_id=session_id)
         answer = result["answer"]
         # 按标点切句渐进展示，每块约20字，模拟真实生成节奏
         step = 20

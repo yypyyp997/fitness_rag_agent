@@ -31,6 +31,13 @@ ensure_vector_store()
 
 from agent import stream_orchestrator
 
+def _session_id() -> str:
+    """浏览器会话级稳定ID：同一次会话内的多轮对话共享一个session"""
+    if "session_id" not in st.session_state:
+        import uuid
+        st.session_state.session_id = f"st-{uuid.uuid4().hex[:12]}"
+    return st.session_state.session_id
+
 # ========== 侧边栏 ==========
 with st.sidebar:
     st.title("💪 健身知识问答")
@@ -53,6 +60,17 @@ with st.sidebar:
         if st.button(question, key=f"example_{i}", width="stretch"):
             # 点击后本次重跑就会走到下方的输入处理逻辑
             st.session_state.pending_question = question
+
+    st.divider()
+    st.subheader("多轮记忆")
+    use_memory = st.toggle("启用多轮对话", value=True,
+                           help="开启后同一会话内可追问（如：那硬拉呢？）")
+    if st.button("清空本会话记忆", width="stretch", disabled=not use_memory):
+        from agent import memory as _mem
+        n = _mem.clear_session(_session_id())
+        st.session_state.messages = []
+        st.toast(f"已清空{n}条记忆")
+        st.rerun()
 
     st.divider()
     if st.button("🗑️ 清空对话", width="stretch"):
@@ -91,7 +109,8 @@ if prompt:
         parts = []
         meta = None
         try:
-            for chunk in stream_orchestrator(prompt):
+            sid = _session_id() if use_memory else None
+            for chunk in stream_orchestrator(prompt, session_id=sid):
                 if isinstance(chunk, dict):
                     meta = chunk
                 else:

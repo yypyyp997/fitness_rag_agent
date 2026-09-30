@@ -1,10 +1,14 @@
 """请求/响应模型：FastAPI自动做校验和文档，业务层不用手写参数检查。"""
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel, Field
 
 class ChatRequest(BaseModel):
     """POST /api/chat 请求体"""
     question: str = Field(..., min_length=1, max_length=500, description="用户问题，1~500字")
+    session_id: Optional[str] = Field(
+        None, min_length=1, max_length=64, pattern=r"^[\w\-\.]+$",
+        description="会话ID（可选）：传入即启用多轮记忆，不传为单轮问答"
+    )
 
 class ChatResponse(BaseModel):
     """POST /api/chat 响应体"""
