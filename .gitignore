@@ -34,3 +34,6 @@ Thumbs.db
 
 # 评估报告（运行产物，不进版本库）
 evaluation/results/
+
+# 多轮对话记忆库（运行时数据，不进版本库）
+data/memory.sqlite3
