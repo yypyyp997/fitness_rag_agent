@@ -39,7 +39,12 @@ async def lifespan(app: FastAPI):
         get_vector_store()
         _state["vector_store_ready"] = True
     else:
-        logger.warning("向量库不存在，服务可用但检索接口会提示先建库；建议先运行 python main.py 完成构建")
+        # 提交点3：镜像不含预建向量库（.dockerignore 排除 chroma_db），启动时自动入库
+        # 构建失败（如缺 DASHSCOPE_API_KEY）会直接抛出、容器快速失败——知识库建不出来时 RAG 服务没有启动价值
+        logger.info("向量库缺失，启动时自动构建：加载 raw 知识库 → 切分 → DashScope Embedding 入库（约1-2分钟）...")
+        from rag import prepare_chunks, build_vector_store
+        build_vector_store(prepare_chunks())
+        logger.info("向量库自动构建完成")
     # 预构建编排图（路由+双支路注册，不调API）
     from agent import build_orchestrator
     build_orchestrator()
