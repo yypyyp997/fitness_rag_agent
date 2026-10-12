@@ -1,0 +1,25 @@
+services:
+  api:
+    build: .                     # 用项目根目录的 Dockerfile 构建
+    image: fitness-agent:0.1     # 构建产物标签（与已有镜像同名，缓存秒过）
+    container_name: fitness-agent
+    ports:
+      - "8000:8000"              # 宿主机:容器端口，访问 http://localhost:8000
+    env_file:
+      - .env                     # DASHSCOPE_API_KEY 从这里注入（容器不继承 Windows 环境变量）
+    environment:
+      MEMORY_DB_PATH: /app/data/memory/memory.sqlite3   # 记忆库重定向进卷，memory.py 原生支持，零代码改动
+    volumes:
+      - chroma-data:/app/chroma_db     # 向量索引：容器删了还在，重建秒加载
+      - memory-data:/app/data/memory   # 对话记忆：会话历史跨容器保留
+    restart: unless-stopped      # 宿主机重启/异常退出后自动拉起
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s         # 启动宽限期：给首次自动建索引留时间
+
+volumes:
+  chroma-data:
+  memory-data:
