@@ -159,11 +159,18 @@ pip install -r requirements.txt
 
 ### 配置 API Key
 
-项目根目录创建 `.env`（已被 .gitignore 忽略）：
+复制模板文件创建 `.env`（`.env` 已被 .gitignore 忽略；`.env.example` 模板在仓库中可查）：
+
+```bash
+copy .env.example .env    # Windows；Linux/macOS 用 cp .env.example .env
+```
+
+编辑 `.env` 填入真实 Key：
 
 ```
 DASHSCOPE_API_KEY=***
 ```
+
 
 也可直接配系统环境变量。可选：注册 [Tavily](https://tavily.com/) 配置 `TAVILY_API_KEY` 启用联网搜索。
 
