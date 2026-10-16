@@ -2,10 +2,11 @@ import logging
 import os
 from config import settings
 
-def get_logger(name: str):
+def get_logger(name: str, log_file: str = "run.log"):
     """
     全局日志生成函数
     :param name: 调用日志的模块名，例：__name__
+    :param log_file: 日志文件名，默认写入 logs/run.log；传入如 "api.log" 可写到独立文件
     :return: logger对象
     """
     # 自动创建日志文件夹
@@ -27,7 +28,7 @@ def get_logger(name: str):
 
     # 文件输出，日志写入logs目录
     file_handler = logging.FileHandler(
-        os.path.join(settings.LOG_DIR, "run.log"),
+        os.path.join(settings.LOG_DIR, log_file),
         encoding="utf-8"
     )
     file_handler.setFormatter(log_format)

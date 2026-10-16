@@ -17,7 +17,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from api.schemas import ChatRequest, ChatResponse, HealthResponse
@@ -25,6 +25,8 @@ from config import settings
 from utils import get_logger
 
 logger = get_logger(__name__)
+# 请求访问日志单独写入 logs/api.log（logs/ 目录已在 .gitignore 中）
+request_logger = get_logger("api.request", log_file="api.log")
 
 # 应用状态（lifespan里填充）
 _state = {"vector_store_ready": False}
@@ -61,6 +63,18 @@ app = FastAPI(
     version="1.1.0",
     lifespan=lifespan,
 )
+
+@app.middleware("http")
+async def log_request_middleware(request: Request, call_next):
+    """请求日志中间件：记录方法、路径、状态码、耗时，写入 logs/api.log。"""
+    start = time.perf_counter()
+    response = await call_next(request)
+    cost_ms = round((time.perf_counter() - start) * 1000, 2)
+    request_logger.info(
+        f"{request.method} {request.url.path} "
+        f"status={response.status_code} cost={cost_ms}ms"
+    )
+    return response
 
 @app.get("/api/health", response_model=HealthResponse)
 def health():
