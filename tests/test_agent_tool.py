@@ -261,6 +261,125 @@ class TestEvalLogic(unittest.TestCase):
                 self.assertIn(key, case)
             self.assertIn(case["expect_route"], ("direct", "agent"))
 
+
+class TestEvalErrorIsolation(unittest.TestCase):
+    """评估器单题异常隔离 + 题间限速：任何一题抛异常都不允许中断整场"""
+
+    @classmethod
+    def setUpClass(cls):
+        from evaluation import eval_rag
+        cls.eval_rag = eval_rag
+
+    def test_exception_case_marked_fail_with_error(self):
+        # 单题执行函数遇 executor 抛异常：三指标全 False、passed False、error 字段带摘要
+        case = {"id": 1, "question": "深蹲要领", "expect_route": "direct",
+                "expect_tools": ["rag_search"], "expect_keywords": ["膝盖"]}
+
+        def boom(q):
+            raise RuntimeError("上游429限流 too many requests")
+
+        detail = self.eval_rag._execute_single_case(case, boom)
+        self.assertFalse(detail["passed"])
+        self.assertFalse(detail["route_ok"])
+        self.assertFalse(detail["tools_ok"])
+        self.assertFalse(detail["keywords_ok"])
+        self.assertIsNone(detail["actual_route"])
+        self.assertEqual(detail["actual_tools"], [])
+        self.assertIsNotNone(detail["error"])
+        self.assertTrue(detail["error"].startswith("ERROR: RuntimeError:"))
+        self.assertIn("429", detail["error"])
+        # answer 与 error 内容一致
+        self.assertEqual(detail["answer"], detail["error"])
+
+    def test_error_message_truncated_to_100_chars(self):
+        # 异常信息前100字，超长必须截断，避免报告炸裂
+        long_msg = "Y" * 300
+        case = {"id": 2, "question": "x", "expect_route": "direct",
+                "expect_tools": [], "expect_keywords": []}
+
+        def boom(q):
+            raise ValueError(long_msg)
+
+        detail = self.eval_rag._execute_single_case(case, boom)
+        prefix = "ERROR: ValueError: "
+        self.assertTrue(detail["error"].startswith(prefix))
+        self.assertEqual(len(detail["error"]) - len(prefix), 100)
+
+    def test_normal_case_error_is_none(self):
+        # 正常通过的题：error 必须为 None（保持报告字段结构一致）
+        case = {"id": 3, "question": "深蹲", "expect_route": "direct",
+                "expect_tools": ["rag_search"], "expect_keywords": ["膝盖"]}
+
+        def ok(q):
+            return {"route": "direct", "tools_used": ["rag_search"],
+                    "answer": "膝盖要对准脚尖"}
+
+        detail = self.eval_rag._execute_single_case(case, ok)
+        self.assertTrue(detail["passed"])
+        self.assertIsNone(detail["error"])
+
+    def test_run_eval_isolates_exception_and_counts_error(self):
+        # 整场评估：中间一题异常，其余题仍要正常执行；summary.error_count 反映异常数
+        import agent
+        from unittest.mock import patch
+
+        cases = [
+            {"id": 1, "question": "会成功A", "expect_route": "direct",
+             "expect_tools": ["rag_search"], "expect_keywords": ["膝盖"]},
+            {"id": 2, "question": "会失败B", "expect_route": "direct",
+             "expect_tools": ["rag_search"], "expect_keywords": ["膝盖"]},
+            {"id": 3, "question": "会成功C", "expect_route": "direct",
+             "expect_tools": ["rag_search"], "expect_keywords": ["膝盖"]},
+        ]
+
+        def fake_orchestrator(q):
+            if "失败" in q:
+                raise RuntimeError("mock 429 rate limit")
+            return {"route": "direct", "tools_used": ["rag_search"],
+                    "answer": "膝盖要对准脚尖"}
+
+        with patch.object(agent, "run_orchestrator", side_effect=fake_orchestrator), \
+             patch("time.sleep") as mock_sleep:
+            report = self.eval_rag.run_eval(cases)
+
+        s = report["summary"]
+        self.assertEqual(s["total"], 3)
+        self.assertEqual(s["error_count"], 1)
+        # 异常算 FAIL，另外两题 PASS
+        self.assertEqual(s["pass_count"], 2)
+
+        # 每题都有 error 字段；异常题非空、正常题为 None
+        for d in report["cases"]:
+            self.assertIn("error", d)
+        self.assertIsNone(report["cases"][0]["error"])
+        self.assertIsNotNone(report["cases"][1]["error"])
+        self.assertTrue(report["cases"][1]["error"].startswith("ERROR:"))
+        self.assertFalse(report["cases"][1]["passed"])
+        self.assertIsNone(report["cases"][2]["error"])
+        # 第三题仍走通说明异常未中断整场
+        self.assertTrue(report["cases"][2]["passed"])
+
+        # 题间限速：3 题只睡 2 次（最后一题后不多睡）
+        self.assertEqual(mock_sleep.call_count, 2)
+
+    def test_run_eval_no_sleep_after_last_case(self):
+        # 单题场景：一整场只有 1 题时不应触发 sleep
+        import agent
+        from unittest.mock import patch
+
+        cases = [{"id": 1, "question": "唯一题", "expect_route": "direct",
+                  "expect_tools": [], "expect_keywords": []}]
+
+        def ok(q):
+            return {"route": "direct", "tools_used": [], "answer": "ok"}
+
+        with patch.object(agent, "run_orchestrator", side_effect=ok), \
+             patch("time.sleep") as mock_sleep:
+            report = self.eval_rag.run_eval(cases)
+
+        self.assertEqual(report["summary"]["error_count"], 0)
+        mock_sleep.assert_not_called()
+
 class TestRetryDecorator(unittest.TestCase):
     """重试装饰器：成功直达、失败重试、耗尽抛原始异常"""
 

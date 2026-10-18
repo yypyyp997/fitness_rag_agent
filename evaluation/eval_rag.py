@@ -15,6 +15,12 @@
 - evaluation/results/eval_时间戳.json：完整报告（含每题回答原文，便于复盘）
 - 退出码：全部通过为0，否则1（方便以后接CI）
 
+健壮性加固（10-16 429限流事故的教训）：
+- 题间限速：相邻两题之间 sleep 3s，最后一题后不多睡
+- 单题异常隔离：任何一题抛异常都不中断整场；异常题记为 FAIL，
+  actual_route=None / actual_tools=[] / 三指标False / passed=False，
+  answer 与 error 字段写入 "ERROR: <类型>: <信息前100字>"
+
 设计说明：沿用 fitness_rag_basic 消融实验的"关键词命中"评估思路，
 扩展到编排层（路由/工具是Agent项目特有的评估维度）。
 """
@@ -61,33 +67,66 @@ def check_case(case: dict, result: dict) -> dict:
         "passed": route_ok and tools_ok and keywords_ok,
     }
 
-def run_eval(cases: list) -> dict:
-    """逐题执行编排入口并检查"""
-    from agent import run_orchestrator  # 延迟导入：确保先完成向量库检查
+def _execute_single_case(case: dict, executor) -> dict:
+    """单题执行 + 异常隔离：executor(question) -> {route, tools_used, answer}
 
-    details = []
-    total_start = time.perf_counter()
-    for i, case in enumerate(cases, 1):
+    抛异常时不中断整场，按约定格式记录：
+      actual_route=None, actual_tools=[], 三指标False, passed=False,
+      answer / error 均为 "ERROR: <异常类型>: <异常信息前100字>"
+    正常题 error 字段为 None，保持报告结构一致。
+    """
+    try:
         start = time.perf_counter()
-        result = run_orchestrator(case["question"])
+        result = executor(case["question"])
         latency = round(time.perf_counter() - start, 2)
         check = check_case(case, result)
-        detail = {
+        return {
             **case,
             "actual_route": result.get("route"),
             "actual_tools": result.get("tools_used", []),
             "latency_sec": latency,
             "answer": result.get("answer", ""),
             **check,
+            "error": None,
         }
+    except Exception as e:
+        err_msg = f"ERROR: {type(e).__name__}: {str(e)[:100]}"
+        return {
+            **case,
+            "actual_route": None,
+            "actual_tools": [],
+            "latency_sec": 0.0,
+            "answer": err_msg,
+            "route_ok": False,
+            "tools_ok": False,
+            "keywords": {},
+            "keywords_ok": False,
+            "passed": False,
+            "error": err_msg,
+        }
+
+def run_eval(cases: list) -> dict:
+    """逐题执行编排入口并检查（单题异常隔离 + 题间限速3s）"""
+    from agent import run_orchestrator  # 延迟导入：确保先完成向量库检查
+
+    details = []
+    total_start = time.perf_counter()
+    for i, case in enumerate(cases, 1):
+        detail = _execute_single_case(case, run_orchestrator)
         details.append(detail)
 
         mark = "PASS" if detail["passed"] else "FAIL"
         hit = sum(detail["keywords"].values())
         total_kw = len(detail["keywords"])
         print(f"[{i}/{len(cases)}] {mark} 路由 {detail['expect_route']}->{detail['actual_route']} "
-              f"工具 {detail['actual_tools']} 关键词 {hit}/{total_kw} 耗时{latency}s")
+              f"工具 {detail['actual_tools']} 关键词 {hit}/{total_kw} 耗时{detail['latency_sec']}s")
         print(f"      问题: {case['question']}")
+        if detail.get("error"):
+            print(f"      {detail['error']}")
+
+        # 题间限速：非最后一题之间 sleep 3s，降低上游429触发概率
+        if i < len(cases):
+            time.sleep(3)
 
     duration = round(time.perf_counter() - total_start, 1)
     total = len(details)
@@ -100,6 +139,7 @@ def run_eval(cases: list) -> dict:
         "keyword_hit_rate": round(sum(all_kw) / len(all_kw), 3) if all_kw else 1.0,
         "avg_latency_sec": round(sum(d["latency_sec"] for d in details) / total, 2),
         "duration_sec": duration,
+        "error_count": sum(1 for d in details if d.get("error")),
     }
     return {"summary": summary, "cases": details}
 
@@ -120,6 +160,7 @@ def main():
     print(f"工具符合率: {s['tool_accuracy']:.1%}")
     print(f"关键词命中率: {s['keyword_hit_rate']:.1%}")
     print(f"平均耗时: {s['avg_latency_sec']}s/题，总耗时 {s['duration_sec']}s")
+    print(f"{s['error_count']} 题执行异常")
 
     # 完整报告落盘（含每题回答原文）
     RESULTS_DIR.mkdir(exist_ok=True)
