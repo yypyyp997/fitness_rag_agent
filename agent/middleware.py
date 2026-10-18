@@ -104,3 +104,28 @@ def postprocess_output(result: dict) -> str:
             if isinstance(text, str) and text.strip():
                 return text.strip()
     return "Agent没有生成有效回答"
+
+def needs_plan_retry(question: str, answer: str) -> bool:
+    """计划模式输出兜底护栏（纯函数，无副作用、不抛异常）：
+
+    仅当 question 命中 _PLAN_KEYWORDS 时启用，满足任一条件返回 True：
+      1. answer 为空白
+      2. answer 以 postprocess_output 的失败占位符「Agent没有生成有效回答」开头
+      3. answer 中不含「组」字（漏掉组数×次数）
+
+    其余情况一律 False。非计划类问题永远不触发，避免误伤普通问答。
+    任何异常都吞掉并返回 False，护栏本身不能成为新的故障点。
+    """
+    try:
+        q = question if isinstance(question, str) else ""
+        a = answer if isinstance(answer, str) else ""
+        if not any(kw in q for kw in _PLAN_KEYWORDS):
+            return False
+        stripped = a.strip()
+        if not stripped:
+            return True
+        if stripped.startswith("Agent没有生成有效回答"):
+            return True
+        return "组" not in a
+    except Exception:
+        return False

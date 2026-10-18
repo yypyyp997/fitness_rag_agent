@@ -23,7 +23,11 @@ from langgraph.graph import END, START, StateGraph
 
 from agent.callbacks import TokenUsageHandler
 from agent.memory import format_history_block, get_recent_messages
-from agent.middleware import postprocess_output, preprocess_input
+from agent.middleware import (
+    needs_plan_retry,
+    postprocess_output,
+    preprocess_input,
+)
 from agent.react_agent import get_agent
 from model.factory import get_llm
 from prompts import get_prompt
@@ -44,6 +48,15 @@ _ROUTER_PROMPT = (
     "只输出 direct 或 agent，不要任何解释。\n\n"
     "用户问题："
 )
+
+# 计划护栏重试提醒：重试轮的最后一轮 Human 消息决定 dynamic_prompt 是否切计划模式，
+# 文案必须命中 _PLAN_KEYWORDS（见 README 9.15），此契约由单测守护
+PLAN_RETRY_REMINDER = (
+    "这是增肌计划类问题。上一版回答缺少组数×次数，"
+    "请重新输出完整的增肌计划：必须包含每周训练安排，"
+    "每个动作标注组数×次数，并附注意事项。"
+)
+
 
 class OrchestratorState(TypedDict):
     """工作流状态：问题进，回答+路由+工具统计出（history为多轮记忆注入，可选）"""
@@ -87,7 +100,11 @@ def direct_rag_answer(state: OrchestratorState) -> dict:
     return {"answer": answer, "tools_used": ["rag_search"]}
 
 def agent_answer(state: OrchestratorState) -> dict:
-    """Agent支路：CP6完整思考-行动循环，并从runtime context回收工具使用统计"""
+    """Agent支路：CP6完整思考-行动循环，并从runtime context回收工具使用统计
+
+    末尾接一层计划模式护栏：若计划类问题的回答漏掉「组数×次数」，
+    追加一句提醒重跑一次；重试结果无论好坏直接采用，最多一次，避免死循环。
+    """
     question = preprocess_input(state["question"])
     if not question:
         return {"answer": "请输入问题", "tools_used": []}
@@ -109,8 +126,34 @@ def agent_answer(state: OrchestratorState) -> dict:
         config={"callbacks": [TokenUsageHandler()]},
     )
     tools_used = ctx.get("tools_used", [])
+    answer = postprocess_output(result)
+
+    # 计划模式运行时护栏：命中则带一句提醒重跑一次（最多1次，结果直接采用）
+    if needs_plan_retry(question, answer):
+        logger.warning(
+            f"计划护栏触发（问题: {question[:30]}），追加提醒重跑一次"
+        )
+        reminder = PLAN_RETRY_REMINDER
+        retry_ctx = {"tools_used": []}
+        retry_result = get_agent().invoke(
+            {
+                "messages": history_messages
+                + [
+                    HumanMessage(content=question),
+                    AIMessage(content=answer),
+                    HumanMessage(content=reminder),
+                ]
+            },
+            context=retry_ctx,
+            config={"callbacks": [TokenUsageHandler()]},
+        )
+        retry_tools_used = retry_ctx.get("tools_used", [])
+        if retry_tools_used:
+            tools_used = retry_tools_used
+        answer = postprocess_output(retry_result)
+
     logger.info(f"Agent支路完成，本轮使用工具: {tools_used}")
-    return {"answer": postprocess_output(result), "tools_used": tools_used}
+    return {"answer": answer, "tools_used": tools_used}
 
 def _route_by_state(state: OrchestratorState) -> str:
     """条件边路由函数：读state里的route字段决定去向"""

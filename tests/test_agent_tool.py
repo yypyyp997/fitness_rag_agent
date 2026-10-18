@@ -15,7 +15,12 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent.middleware import preprocess_input, postprocess_output, _PLAN_KEYWORDS
+from agent.middleware import (
+    _PLAN_KEYWORDS,
+    needs_plan_retry,
+    postprocess_output,
+    preprocess_input,
+)
 from agent.agent_orchestrator import (
     OrchestratorState,
     _route_by_state,
@@ -103,6 +108,57 @@ class TestPlanKeywords(unittest.TestCase):
 
     def test_nonempty(self):
         self.assertGreater(len(_PLAN_KEYWORDS), 0)
+
+class TestNeedsPlanRetry(unittest.TestCase):
+    """计划模式输出兜底护栏：纯函数，无任何外部依赖"""
+
+    def test_plan_question_missing_zu_triggers_retry(self):
+        # 计划题命中关键词，回答里没「组」字 → 触发
+        q = "帮我制定一周增肌计划"
+        a = "周一练胸，动作包括卧推、哑铃飞鸟，注意循序渐进。"
+        self.assertTrue(needs_plan_retry(q, a))
+
+    def test_plan_question_with_zu_no_retry(self):
+        # 计划题回答已包含「组」→ 不触发
+        q = "帮我制定一周增肌计划"
+        a = "周一胸背：卧推 4组×8次，划船 3组×10次。"
+        self.assertFalse(needs_plan_retry(q, a))
+
+    def test_non_plan_question_never_triggers(self):
+        # 非计划题即便没有「组」字也不能触发，避免误伤普通问答
+        q = "深蹲标准动作要领是什么"
+        a = "双脚与肩同宽，膝盖对准脚尖方向。"
+        self.assertFalse(needs_plan_retry(q, a))
+
+    def test_empty_answer_triggers_for_plan_question(self):
+        # 空/纯空白答案：计划题下必须触发
+        self.assertTrue(needs_plan_retry("帮我制定减脂计划", ""))
+        self.assertTrue(needs_plan_retry("帮我制定减脂计划", "   \n "))
+
+    def test_placeholder_answer_triggers_for_plan_question(self):
+        # postprocess_output 失败占位符同样触发
+        q = "帮我设计训练计划"
+        self.assertTrue(
+            needs_plan_retry(q, "Agent没有生成有效回答")
+        )
+
+    def test_normal_qa_not_affected(self):
+        # 常规问答即便含「计划」二字但未命中关键词，不触发
+        q = "什么是渐进超负荷原则"
+        a = "渐进超负荷指逐步增加训练强度以促进适应。"
+        self.assertFalse(needs_plan_retry(q, a))
+
+    def test_non_string_inputs_are_safe(self):
+        # 纯函数要求：非字符串输入不抛异常，走False/True合理分支
+        self.assertFalse(needs_plan_retry(None, None))
+        self.assertFalse(needs_plan_retry(123, 456))
+        # 计划题 + None 答案 视为空 → True
+        self.assertTrue(needs_plan_retry("帮我制定增肌计划", None))
+
+    def test_retry_reminder_hits_plan_keywords(self):
+        # 契约：重试提醒必须重新命中计划关键词，否则重试轮掉回普通模式
+        from agent.agent_orchestrator import PLAN_RETRY_REMINDER
+        self.assertTrue(any(kw in PLAN_RETRY_REMINDER for kw in _PLAN_KEYWORDS))
 
 class TestOrchestratorStructure(unittest.TestCase):
     """编排工作流结构：状态路由函数 + 图节点/边（不执行真实节点逻辑）"""
