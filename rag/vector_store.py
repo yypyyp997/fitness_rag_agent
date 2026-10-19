@@ -4,7 +4,7 @@ from pathlib import Path
 from langchain_chroma import Chroma
 from model import get_embedding
 from config import settings
-from utils import get_logger
+from utils import get_logger, retry_decorator
 
 logger = get_logger(__name__)
 
@@ -72,7 +72,7 @@ def prepare_chunks():
     save_chunks_cache(split_docs)
     return split_docs
 
-
+@retry_decorator(max_retry=2)
 def build_vector_store(split_docs):
     """构建向量库并持久化保存到本地"""
     embedding = get_embedding()

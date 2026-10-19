@@ -2,7 +2,7 @@ from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_community.chat_models.tongyi import ChatTongyi
 from config import settings
 from prompts import get_generation_params
-from utils import get_logger, retry_decorator
+from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -17,7 +17,6 @@ def get_llm():
     )
     return llm
 
-@retry_decorator(max_retry=3)
 def get_embedding():
     """获取Embedding向量模型实例：TextEmbedding V4"""
     logger.info(f"初始化Embedding模型: {settings.EMBEDDING_MODEL_NAME}")
