@@ -18,9 +18,10 @@
 | **FastAPI 服务层** | 四个 HTTP 接口：健康检查 / 非流式问答 / SSE 流式问答 / 会话删除，/docs 自动交互文档，lifespan 启动预热    |
 | **多轮对话记忆** | SQLite 全量存储 + 滑动窗口（最近 6 条）注入到路由、直答、Agent 三处                                       |
 | **会话管理** | 新建 / 切换 / 删除 / 清空，首问自动命名，历史会话可回放                                                   |
+| **故障兜底** | 编排五层防线：工具内捕获 → 节点级降级 → 落库原子化 → 入口总兜底，任何依赖故障都「有回答、不炸场」（见踩坑 9.17） |
 | 双入口 | Streamlit 网页（流式打字机 + 会话列表）+ API 服务（任何 HTTP 客户端可调）                                 |
 | 评估体系 | 路由/工具/关键词三指标 + JSON 报告落盘 + CI 友好退出码                                                    |
-| 单元测试 | 62 例纯逻辑单测，0.2 秒跑完，零 API 依赖                                                                  |
+| 单元测试 | 76 例纯逻辑单测，0.3 秒跑完，零 API 依赖                                                                  |
 | 模型可切换 | DashScope 生态内 qwen-turbo / qwen-max 一键切换（settings.py 单点配置），模型升级后的行为回归由评估集守护 |
 
 ## 2. 系统架构：双入口，共享业务核心
@@ -45,8 +46,9 @@
   │ 历史块拼在检索模板前      │   │ ReAct 循环（create_agent）    │
   │ rag_prompt 单次生成      │   │ ├─ rag_search（多轮可调用）  │
   │ dashscope原生SDK 真流式  │   │ ├─ calculator（白名单安全）  │
-  └───────────┬───────────┘   │ ├─ search_web（Tavily降级）  │
-              │               │ └─ 计划模式动态提示词          │
+  │ 节点级降级（防线2）       │   │ ├─ search_web（Tavily降级）  │
+  └───────────┬───────────┘   │ └─ 计划模式动态提示词          │
+              │               │ 节点级降级（防线3）+ 工具内捕获（防线1）
               │               │ postprocess 倒序取最终回答     │
               │               │ 完整循环后按块渐进输出          │
               │               └───────────┬────────────────┘
@@ -54,6 +56,7 @@
                     ┌────────▼─────────┐
                     │  回答 + 元信息     │   route / tools_used / latency
                     │  有session则落库   │   SQLite: data/memory.sqlite3
+                    │  落库原子化（防线4）│   入口总兜底（防线5）：绝不 raise
                     └──────────────────┘
 ```
 
@@ -93,7 +96,7 @@ fitness_rag_agent/
 │   ├── middleware.py         #   官方中间件：工具监控/计划模式/输入输出处理
 │   ├── callbacks.py          #   TokenUsageHandler 用量统计（非流式路径）
 │   ├── memory.py             #   多轮记忆：SQLite 存储 + 滑动窗口 + 会话生命周期
-│   └── agent_orchestrator.py #   LangGraph 编排：路由分流 + 双支路 + 双流式
+│   └── agent_orchestrator.py #   LangGraph 编排：路由分流 + 双支路 + 双流式 + 五层防线
 ├── rag/                      # ===== RAG 层 =====
 │   ├── loader.py             #   多格式加载：md/txt/pdf/docx
 │   ├── splitter.py           #   递归字符切分（300/30）
@@ -101,7 +104,7 @@ fitness_rag_agent/
 │   ├── retrieval.py          #   检索器封装（top_k=3）
 │   └── rerank.py             #   重排序（预留位，见踩坑 9.10 的启用条件）
 ├── tools/                    # ===== 工具层 =====
-│   ├── rag_search.py         #   向量检索（缓存检索器 + 来源标注）
+│   ├── rag_search.py         #   向量检索（缓存检索器 + 来源标注 + 失败降级）
 │   ├── calculator.py         #   白名单 eval 安全计算器
 │   └── search_web.py         #   Tavily 搜索（无 Key 优雅降级）
 ├── prompts/                  # ===== 提示词模块 =====
@@ -109,7 +112,7 @@ fitness_rag_agent/
 │   ├── rag_prompt.md         #   RAG 直答模板（{context} {question}）
 │   ├── agent_system.md       #   Agent 常规模式系统提示词
 │   └── tool_desc.md          #   工具描述（计划模式增强素材）
-├── model/factory.py          # 模型工厂：ChatTongyi / DashScopeEmbeddings（带重试）
+├── model/factory.py          # 模型工厂：ChatTongyi / DashScopeEmbeddings
 ├── config/
 │   ├── settings.py           # 全局配置单例
 │   └── prompt_config.yaml    # 生成参数（temperature 等，改参数不动代码）
@@ -117,8 +120,9 @@ fitness_rag_agent/
 │   ├── eval_rag.py           #   三指标评估 + JSON 报告 + 退出码
 │   ├── test_questions.json   #   评估集：8 题覆盖双支路
 │   └── results/              #   报告落盘目录（gitignore）
-├── tests/                    # 62 例单元测试（unittest，零 API 依赖）
+├── tests/                    # 76 例单元测试（unittest，零 API 依赖）
 │   ├── test_agent_tool.py    #   中间件/编排结构/计算器安全/评估逻辑/重试
+│   ├── test_failure_path.py  #   失败传播路径：五层防线完整性（任何故障都有回答）
 │   ├── test_rag_retrieval.py #   RAG 配置边界/切分/提示词加载
 │   └── test_memory.py        #   记忆存取/窗口/会话隔离/路径隔离回归
 └── data/
@@ -181,7 +185,7 @@ DASHSCOPE_API_KEY=***
 streamlit run app.py                             # 网页界面（:8501，流式+多会话）
 uvicorn api.main:app --host 0.0.0.0 --port 8000  # API 服务（:8000，/docs 自动文档）
 python evaluation\eval_rag.py                    # 评估（8 题，约 90 秒）
-python -m unittest discover tests -v             # 单元测试（62 例，0.2 秒）
+python -m unittest discover tests -v             # 单元测试（76 例，0.3 秒）
 ```
 
 首次运行会自动构建向量库（约 1~2 分钟）。
@@ -257,7 +261,7 @@ event: done    data: [DONE]
 
 - **存储层**（agent/memory.py）：SQLite 按 session 全量落库，可审计可恢复。每次操作独立连接 + `check_same_thread=False`（适配 uvicorn 线程池）+ WAL 模式（读写并发友好）+ session_id 索引
 - **注入层**：调用编排层时按需取最近 6 条（约 3 轮，单条再截 200 字），注入到**三处**——路由提示词前（让"那硬拉呢"这类追问能被正确分类）、direct 支路检索模板前（回答衔接上文）、Agent 支路 messages 列表（Human/AIMessage 交替）
-- **落库时机**：回答成功生成后才写 user + assistant 两条，失败不污染历史
+- **落库时机**：回答成功生成后才写 user + assistant 两条，失败不污染历史；落库本身原子化且不上抛异常（防线4，见踩坑 9.17）
 
 **会话生命周期**（ChatGPT 式体验）：
 
@@ -323,7 +327,7 @@ event: done    data: [DONE]
 **现象**：跑测试 2 例失败，且测试会话数据写进了真实的 `data/memory.sqlite3`。
 **根因**：memory 库路径原是模块级常量，**导入时**就锁定。unittest 按字母序先跑 test_agent_tool → 连带导入 agent 包 → memory 用默认路径完成初始化 → test_memory 后设的 `MEMORY_DB_PATH` 环境变量形同虚设。
 **修复**：路径改 `_db_path()` 函数内惰性读取 + 新增回归测试硬断言"路径必须跟随环境变量"。
-**教训**：模块级副作用（导入时读环境变量/锁路径/建连接）是测试隔离的天敌——配置要在**使用时**读取，不是**导入时**。`python -m unittest` 按字母序发现测试，导入顺序是不可控的。
+**教训**：① 模块级副作用（导入时读环境变量/锁路径/建连接）是测试隔离的天敌——配置要在**使用时**读取，不是**导入时**。`python -m unittest` 按字母序发现测试，导入顺序是不可控的。
 
 ### 9.12 Streamlit 全脚本重跑 → 定义位置就是运行时顺序
 
@@ -340,7 +344,7 @@ event: done    data: [DONE]
 
 ### 9.14 上游 API 网络瞬断（超时重试的活案例）
 
-E2E 验证中一次计算请求 120 秒超时（平时 1.4 秒），5 秒后重试立即成功——dashscope 偶发瞬断真实存在。**教训**：外部依赖必须有超时预算和重试策略。本项目 embedding 调用的重试由 LangChain 内置的 embed_with_retry 提供（tenacity 指数退避 1~4s，见 venv 源码 dashscope.py L49——曾在面试准备时核实过它真实存在且真实工作）；get_embedding 的自写重试装饰器实际防的是构造失败，属于已知的位置偏差（构造无网络行为），保留作为「重试要加在网络调用层而非对象构造层」的活教材。
+E2E 验证中一次计算请求 120 秒超时（平时 1.4 秒），5 秒后重试立即成功——dashscope 偶发瞬断真实存在。**教训**：外部依赖必须有超时预算和重试策略。本项目 embedding 调用的重试由 LangChain 内置的 embed_with_retry 提供（tenacity 指数退避 1~4s，见 venv 源码 dashscope.py L49——已核实它真实存在且真实工作）；get_embedding 的自写重试装饰器实际防的是构造失败，属于已知的位置偏差（构造无网络行为），保留作为「重试要加在网络调用层而非对象构造层」的活教材。
 
 
 ### 9.15 模型升级暴露提示词规则冲突（强模型把矛盾执行了出来）
@@ -359,6 +363,28 @@ E2E 验证中一次计算请求 120 秒超时（平时 1.4 秒），5 秒后重�
 **修复**：① 单题执行抽成 `_execute_single_case` 并用 `except Exception` 隔离——异常题记为结构完整的 FAIL 档案（三指标 False、error 字段写 "ERROR: 类型: 摘要前100字"、summary 新增 error_count），循环继续跑下一题；用 Exception 而非裸 `except:`，保证 Ctrl+C 中断不被误吞；② 相邻两题之间 sleep 3 秒降低限流概率，最后一题后不多睡；③ 退出码语义不变——异常题算失败，CI 不会把半残评估当绿灯。
 **验证**：62 例单测全绿（含用 patch 把 sleep 换成计数器、断言"3 题 2 睡、1 题 0 睡"的边界契约）；真实评估 8/8、error_count=0。
 **教训**：① 评估器也是被测系统的一部分——它崩掉的方式同样需要被设计：崩掉的题要变成一条数据（FAIL + error 记录），不能变成一场消失的评估；② 兜底机制保可用不保正确：上游整体限流时，路由兜底只是把失败从 A 路径搬到 B 路径；③ 失败隔离的粒度应该是"题"，而不是"场"。（限流档按模型划分，换模型额度桶是另一条解法，见 9.15。）
+
+### 9.17 编排层故障兜底：把「会炸全场」变成「永远有回答」（五层防线）
+
+**动机**：排查失败传播路径时发现，路由节点失败有 try/except 兜底，而检索、生成、落库的失败没有任何保护——同一张图里防护并不均匀。用实弹探针（坏 API Key、抛异常的假检索器、会主动发工具调用的假模型）逐条引爆验证：traceback 尾部的 `During task with name '节点名'` 精确标注了每个断点，同时实证了三条会炸穿整场的路径：① **direct 支路裸调用**——检索或生成任何一处失败直接穿出编排入口，整场失败；② **agent 支路 rag_search 穿透 ToolNode**——LangGraph ToolNode 默认错误策略只兜参数校验错（ToolInvocationError → 错误 ToolMessage 喂回模型），普通异常照样 re-raise 穿出子图，而 calculator/search_web 因函数体自捕获永不炸——同一张图里三种工具三种命运；③ **落库块无保护**——回答生成成功但落库失败时异常照样抛给调用方，且 user 落库后 assistant 落库失败会留下残缺历史。「能定位」不等于「该炸」：检索层挂了不该让整个服务不可用。
+
+**设计**（五层防线，外层失守内层兜住，最外层绝不裸奔）：
+
+| 防线 | 位置 | 拦什么 | 降级行为 |
+|---|---|---|---|
+| 1 工具内捕获 | tools/rag_search.py | 检索器初始化/执行失败（向量库缺失、Embedding 故障） | 返回自然语言降级文案；Agent 支路喂回模型自行解释（9.7 哲学：工具的失败也是有效输出） |
+| 2 直答节点级捕获 | agent_orchestrator.direct_rag_answer | 检索失败与生成失败**分别**捕获 | 各返回对应降级文案，节点永不抛异常 |
+| 3 Agent节点级捕获 | agent_orchestrator.agent_answer | Agent 循环失败（模型 401 / 内置重试耗尽 / 工具异常穿透） | 返回降级文案，节点永不抛异常 |
+| 4 落库原子化 | agent_orchestrator._save_history | 读取历史失败、落库任何一步失败 | 记 ERROR 不上抛；降级回答不写入历史 |
+| 5 入口总兜底 | run_orchestrator / stream_orchestrator | 图执行意外异常（理论上前四层已兜住） | 返回降级 dict / 降级流，**绝不 raise** |
+
+**设计取舍**三条：
+- **降级文案是诚实的失败**：明确区分「知识库不可用」与「模型服务不可用」两套文案，不伪装成正常回答；降级回答一律不落库（`_is_degraded` 白名单判定），避免把故障对话污染进多轮记忆。
+- **评估语义的变化**：防线 5 保证 run_orchestrator 永远返回结构完整的 dict，评估三指标照常判定——上游整体故障时所有题会**整齐地 FAIL**（挂关键词）而不是崩场，error_count 语义收窄为「真正的意外」。兜底保可用不保正确，与 9.16 的结论一脉相承。
+- **快乐路径零改动**：提示词、路由边界、工具调用逻辑全部原样——这条加固不改变任何正常回答的行为，历史评估数据仍然有效。
+
+**验证**：新增 14 例失败传播路径单测（tests/test_failure_path.py，假检索器/假模型/假图三级注入，断言任何节点故障下 run_orchestrator / stream_orchestrator 都返回结构完整结果且不抛异常、rag_search 工具自身永不抛、降级回答不落库、流式路径永远有收尾 meta），62 例存量测试全绿确认零行为回归，合计 76 例（0.3 秒）。
+**教训**：① 「失败不落库」靠异常天然跳过是**隐式契约**——加固时要把隐式契约显式化（原子化落库函数 + 降级不落库白名单），否则后人一动就会破坏；② 防线要分层且每层只留一个裸奔口，最外层（统一入口）绝不裸奔——调用方从此不需要为「编排层炸穿」写防御代码；③ 实弹探针（traceback 的 During task 标注）是摸清防线条带最便宜的方式：坏 Key 炸出 model→agent_answer 双层标注、假检索器炸出 direct_answer 标注，防线该加在哪一目了然。
 
 ## 10. 评估体系
 
@@ -380,7 +406,7 @@ python evaluation\eval_rag.py
 
 报告落盘 `evaluation/results/eval_时间戳.json`（含每题回答原文），退出码全过 0 / 否则 1，可直接接 CI。
 
-**评估器自身健壮性**：题间限速 3 秒 + 单题异常隔离——异常题记为 FAIL 并带 error 摘要，不中断整场，error 字段区分"答错"与"没跑成"（事故与修复见踩坑 9.16）。
+**评估器自身健壮性**：题间限速 3 秒 + 单题异常隔离——异常题记为 FAIL 并带 error 摘要，不中断整场，error 字段区分"答错"与"没跑成"（事故与修复见踩坑 9.16）。编排层五层防线（踩坑 9.17）落地后，评估链路的依赖故障已被编排入口吸收，异常隔离从「最后的保险」变成「双保险」。
 
 **评估集维护原则**：改路由提示词、换知识库、调检索参数之后必须重跑；关键词从当前知识库的真实回答里选，不凭记忆写。
 
@@ -390,15 +416,16 @@ python evaluation\eval_rag.py
 python -m unittest discover tests -v
 ```
 
-62 例全绿，0.2 秒完成。选 unittest 而非 pytest：标准库零依赖 CI 不装包；pytest 完全兼容 unittest.TestCase，将来切换零改动。分工哲学：**单测守代码结构（0.2 秒），评估守系统行为（约 90 秒）**。
+76 例全绿，0.3 秒完成。选 unittest 而非 pytest：标准库零依赖 CI 不装包；pytest 完全兼容 unittest.TestCase，将来切换零改动。分工哲学：**单测守代码结构（0.3 秒），评估守系统行为（约 90 秒）**。
 
 | 测试文件 | 覆盖点 | 数量 |
 |---|---|---|
-| test_agent_tool.py | 输入预处理 / 输出提取 / 计划关键词 / 路由兜底 / 图结构 / 计算器安全 /评估逻辑 / 重试装饰器 / JSON 工具 / 计划护栏判定 / 评估异常隔离 | 43 |
+| test_agent_tool.py | 输入预处理 / 输出提取 / 计划关键词 / 路由兜底 / 图结构 / 计算器安全 / 评估逻辑 / 重试装饰器 / JSON 工具 / 计划护栏判定 / 评估异常隔离 | 43 |
+| test_failure_path.py | **失败传播路径**：rag_search 工具永不抛 / direct 检索、生成分别降级 / agent 模型失败降级 / 历史读写失败不炸 / 落库失败不炸 / 降级回答不落库（含正常落库对照）/ 图执行意外失败兜底 / 流式故障仍有收尾 meta / 降级文案登记表契约 | 14 |
 | test_rag_retrieval.py | RAG 配置边界 / 文档切分 / 提示词加载与注释剔除 | 13 |
 | test_memory.py | 记忆存取 / 滑动窗口 / 会话隔离 / 清空 / 历史格式化 / **路径隔离回归** | 6 |
 
-技巧两则：轻量替身（postprocess 只读 type/content 两属性就用假对象替代 AIMessage）；图结构测试（`get_graph().nodes` 验证三节点存在，不调 LLM）。
+技巧两则：轻量替身（postprocess 只读 type/content 两属性就用假对象替代 AIMessage）；图结构测试（`get_graph().nodes` 验证三节点存在，不调 LLM）。失败传播路径测试用假检索器/假模型/假图注入编排入口，断言「任何节点故障都有结构完整的返回、绝不向调用方抛异常」——防线本身也要有测试守护。
 
 ## 12. 设计决策与思考
 
@@ -420,6 +447,8 @@ python -m unittest discover tests -v
 
 **⑨ 配置与代码分离的度**。业务常调的（temperature、系统提示词）进配置热加载；结构稳定的（路由提示词）放代码常量。不是所有提示词都该配置化。
 
+**⑩ 失败传播路径是设计出来的，不是靠运气**。工具层捕获（防线1）→ 节点级降级（防线2/3）→ 落库原子化（防线4）→ 入口总兜底（防线5），每层只留一个裸奔口、最外层绝不裸奔；「任何情况下都有回答」由 9 例失败传播路径单测守护（见踩坑 9.17）。可用性（永远有响应）与正确性（响应内容对）分开保：兜底保前者，评估保后者。
+
 ## 13. 与基线项目对比
 
 | 能力 | fitness_rag_basic | 本项目                               |
@@ -432,9 +461,10 @@ python -m unittest discover tests -v
 | **API 服务化** | 无 | FastAPI 四接口 + SSE + lifespan 预热 |
 | **多轮对话记忆** | 无 | SQLite + 滑动窗口三处注入            |
 | **会话管理** | 无 | 新建/切换/删除/自动命名/回放         |
+| **故障兜底** | 异常直接抛 | 五层防线，任何依赖故障都有回答       |
 | 交互界面 | 命令行 | 命令行 + Streamlit + API             |
 | 评估 | 检索参数消融 | 三指标 + JSON 报告 + CI 退出码       |
-| 测试 | 无 | 62 例单元测试                        |
+| 测试 | 无 | 76 例单元测试                        |
 | 知识库 | 单文件 md | 四件套多格式（pdf/md/txt/docx）      |
 
 ## 14. 后续计划
@@ -454,4 +484,4 @@ python -m unittest discover tests -v
 
 1. **每个坑都写进 README**——踩坑不可耻，重复踩才可耻；排障故事比"我会用 LangChain"值钱得多。
 2. **评估先于优化**——先有 6/8 的度量，才有路由修复和 8/8 的复测；没有度量就没有优化。
-3. **测试与评估分工**——单测 0.2 秒守结构，评估 90 秒守行为，两条线互补不重复。
+3. **测试与评估分工**——单测 0.3 秒守结构，评估 90 秒守行为，两条线互补不重复。

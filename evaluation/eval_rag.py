@@ -15,7 +15,7 @@
 - evaluation/results/eval_时间戳.json：完整报告（含每题回答原文，便于复盘）
 - 退出码：全部通过为0，否则1（方便以后接CI）
 
-健壮性加固（10-16 429限流事故的教训）：
+健壮性加固（429 限流事故的教训，见 README 踩坑 9.16）：
 - 题间限速：相邻两题之间 sleep 3s，最后一题后不多睡
 - 单题异常隔离：任何一题抛异常都不中断整场；异常题记为 FAIL，
   actual_route=None / actual_tools=[] / 三指标False / passed=False，
