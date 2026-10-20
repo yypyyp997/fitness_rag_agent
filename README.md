@@ -1,5 +1,7 @@
 # Fitness RAG Agent
 
+[![CI](https://github.com/yypyyp997/fitness_rag_agent/actions/workflows/ci.yml/badge.svg)](https://github.com/yypyyp997/fitness_rag_agent/actions/workflows/ci.yml)
+
 基于 **LangChain + LangGraph + 通义千问（DashScope）+ Chroma + FastAPI + Streamlit** 构建的健身领域 RAG 智能体。
 
 一句话说清它：**简单知识问答走 RAG 直答支路（1 次检索 + 1 次生成，快且省 token），复杂任务走完整 ReAct Agent 循环（工具自主调度），LangGraph 编排层统一分流；对外提供 Web 界面与标准 API 双入口，支持多轮对话记忆与会话管理**。
