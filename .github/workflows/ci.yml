@@ -1,0 +1,25 @@
+# GitHub Actions CI：push/PR 自动跑全量单元测试
+# 设计原则：CI 只守结构（单测，快/免费/确定性），行为验证（评估）留在本地——
+# 评估要真 Key、烧配额、约90秒且有429抖动，进CI既贵又抖（README 分工哲学的延伸）
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 运行单元测试（76例，约0.3秒）
+        run: python -m unittest discover -s tests -p "test_*.py"
