@@ -5,7 +5,6 @@
 另含两个普通函数：输入预处理 / 输出提取
 """
 from typing import Callable
-
 from langchain.agents import AgentState
 from langchain.agents.middleware import (
     ModelRequest,
@@ -16,7 +15,6 @@ from langchain.agents.middleware import (
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langgraph.runtime import Runtime
-
 from prompts import get_prompt
 from utils import get_logger
 
