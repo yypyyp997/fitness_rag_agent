@@ -45,6 +45,7 @@ def rag_search(query: str) -> str:
         return RETRIEVAL_DEGRADED_HINT
 
     if not docs:
+        logger.info(f"rag_search 检空，知识库无相关内容: {query}")
         return "知识库中没有检索到相关内容。"
 
     # 拼接检索结果并带上来源，方便Agent在回答里注明出处
@@ -52,4 +53,5 @@ def rag_search(query: str) -> str:
     for i, doc in enumerate(docs, 1):
         source = Path(doc.metadata.get("source", "未知来源")).name
         parts.append(f"【片段{i}｜来源: {source}】\n{doc.page_content}")
+    logger.info(f"rag_search 返回 {len(docs)} 个片段: {query}")
     return "\n\n".join(parts)
