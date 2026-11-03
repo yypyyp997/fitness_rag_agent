@@ -1,11 +1,12 @@
 import os
 from dotenv import load_dotenv
 
-# 加载根目录下的.env环境变量（存放API密钥）
-load_dotenv()
-
 # 项目根目录（config/ 的上一级）：所有路径锚定到这里，与运行时工作目录无关
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 加载根目录下的.env环境变量（存放API密钥）
+env_path=os.path.join(BASE_DIR,".env")
+load_dotenv(env_path)
 
 class Settings:
     # ========== DashScope 大模型与Embedding配置 ==========
