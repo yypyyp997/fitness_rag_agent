@@ -26,6 +26,10 @@ streamlit>=1.38.0
 # 工具库
 requests>=2.32.0
 
+langchain-core>=0.2.0          # 直接依赖显式声明：13 处直接 import，不靠 langchain 传递
+dashscope>=1.14.1              # 直接依赖显式声明：编排器 L333 流式路径直调，下限抄 langchain-dashscope 要求
+pydantic>=2.0.0                # 直接依赖显式声明：api/schemas.py 用 v2 语法（Field pattern=）
+
 # API服务层
 fastapi>=0.115.0
 uvicorn>=0.30.0
