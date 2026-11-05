@@ -23,7 +23,7 @@
 | **故障兜底** | 编排五层防线：工具内捕获 → 节点级降级 → 落库原子化 → 入口总兜底，任何依赖故障都「有回答、不炸场」（见踩坑 9.17） |
 | 双入口 | Streamlit 网页（流式打字机 + 会话列表）+ API 服务（任何 HTTP 客户端可调）                                 |
 | 评估体系 | 路由/工具/关键词三指标 + JSON 报告落盘 + CI 友好退出码                                                    |
-| 单元测试 | 76 例纯逻辑单测，0.3 秒跑完，零 API 依赖                                                                  |
+| 单元测试 | 79 例纯逻辑单测，约 0.4 秒跑完，零 API 依赖                                                                  |
 | 模型可切换 | DashScope 生态内 qwen-turbo / qwen-max 一键切换（settings.py 单点配置），模型升级后的行为回归由评估集守护 |
 
 ## 2. 系统架构：双入口，共享业务核心
@@ -122,7 +122,7 @@ fitness_rag_agent/
 │   ├── eval_rag.py           #   三指标评估 + JSON 报告 + 退出码
 │   ├── test_questions.json   #   评估集：8 题覆盖双支路
 │   └── results/              #   报告落盘目录（gitignore）
-├── tests/                    # 76 例单元测试（unittest，零 API 依赖）
+├── tests/                    # 79 例单元测试（unittest，零 API 依赖）
 │   ├── test_agent_tool.py    #   中间件/编排结构/计算器安全/评估逻辑/重试
 │   ├── test_failure_path.py  #   失败传播路径：五层防线完整性（任何故障都有回答）
 │   ├── test_rag_retrieval.py #   RAG 配置边界/切分/提示词加载
@@ -187,7 +187,7 @@ DASHSCOPE_API_KEY=***
 streamlit run app.py                             # 网页界面（:8501，流式+多会话）
 uvicorn api.main:app --host 0.0.0.0 --port 8000  # API 服务（:8000，/docs 自动文档）
 python evaluation\eval_rag.py                    # 评估（8 题，约 90 秒）
-python -m unittest discover tests -v             # 单元测试（76 例，0.3 秒）
+python -m unittest discover tests -v             # 单元测试（79 例，约 0.4 秒）
 ```
 
 首次运行会自动构建向量库（约 1~2 分钟）。
@@ -442,7 +442,7 @@ python evaluation\eval_rag.py
 python -m unittest discover tests -v
 ```
 
-76 例全绿，0.3 秒完成。选 unittest 而非 pytest：标准库零依赖 CI 不装包；pytest 完全兼容 unittest.TestCase，将来切换零改动。分工哲学：**单测守代码结构（0.3 秒），评估守系统行为（约 90 秒）**。
+79 例全绿，约 0.4 秒完成。选 unittest 而非 pytest：标准库零依赖 CI 不装包；pytest 完全兼容 unittest.TestCase，将来切换零改动。分工哲学：**单测守代码结构（约 0.4 秒），评估守系统行为（约 90 秒）**。
 
 | 测试文件 | 覆盖点 | 数量 |
 |---|---|---|
@@ -490,7 +490,7 @@ python -m unittest discover tests -v
 | **故障兜底** | 异常直接抛 | 五层防线，任何依赖故障都有回答       |
 | 交互界面 | 命令行 | 命令行 + Streamlit + API             |
 | 评估 | 检索参数消融 | 三指标 + JSON 报告 + CI 退出码       |
-| 测试 | 无 | 76 例单元测试                        |
+| 测试 | 无 | 79 例单元测试                        |
 | 知识库 | 单文件 md | 四件套多格式（pdf/md/txt/docx）      |
 
 ## 14. 后续计划
@@ -510,4 +510,4 @@ python -m unittest discover tests -v
 
 1. **每个坑都写进 README**——踩坑不可耻，重复踩才可耻；排障故事比"我会用 LangChain"值钱得多。
 2. **评估先于优化**——先有 6/8 的度量，才有路由修复和 8/8 的复测；没有度量就没有优化。
-3. **测试与评估分工**——单测 0.3 秒守结构，评估 90 秒守行为，两条线互补不重复。
+3. **测试与评估分工**——单测 约 0.4 秒守结构，评估 90 秒守行为，两条线互补不重复。
