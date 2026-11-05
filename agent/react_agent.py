@@ -27,6 +27,11 @@ logger = get_logger(__name__)
 
 _agent_cache = None
 
+#Agent 单次运行步数预算：N 轮工具 + 收尾作答 = 2N+2 个图节点步（langgraph 1.2.11 实测）。
+# 16 = 至多 7 轮工具 + 作答：高于历史最大值（5 连查，见踩坑 9.15）留 2 轮余量；
+# 超限抛 GraphRecursionError（Exception 子类），由编排层防线3 捕获降级，调用方不见异常。
+AGENT_RECURSION_LIMIT = 16
+
 class AgentContext(TypedDict, total=False):
     """runtime上下文结构：工具使用统计由monitor_tool写入，编排层和评估模块可读取"""
     tools_used: list
@@ -65,7 +70,7 @@ def run_agent(question: str) -> str:
     result = agent.invoke(
         {"messages": [HumanMessage(content=question)]},
         context={"tools_used": []},
-        config={"callbacks": [TokenUsageHandler()]},
+        config={"recursion_limit": AGENT_RECURSION_LIMIT, "callbacks": [TokenUsageHandler()]},
     )
     answer = postprocess_output(result)
     logger.info(f"Agent回答完成，长度{len(answer)}字")

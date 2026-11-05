@@ -38,7 +38,7 @@ from agent.middleware import (
     postprocess_output,
     preprocess_input,
 )
-from agent.react_agent import get_agent
+from agent.react_agent import AGENT_RECURSION_LIMIT, get_agent
 from model.factory import get_llm
 from prompts import get_prompt
 from tools import rag_search
@@ -186,7 +186,7 @@ def agent_answer(state: OrchestratorState) -> dict:
         result = get_agent().invoke(
             {"messages": history_messages + [HumanMessage(content=question)]},
             context=ctx,
-            config={"callbacks": [TokenUsageHandler()]},
+            config={"recursion_limit": AGENT_RECURSION_LIMIT, "callbacks": [TokenUsageHandler()]},
         )
         tools_used = ctx.get("tools_used", [])
         answer = postprocess_output(result)
@@ -208,7 +208,7 @@ def agent_answer(state: OrchestratorState) -> dict:
                     ]
                 },
                 context=retry_ctx,
-                config={"callbacks": [TokenUsageHandler()]},
+                config={"recursion_limit": AGENT_RECURSION_LIMIT, "callbacks": [TokenUsageHandler()]},
             )
             retry_tools_used = retry_ctx.get("tools_used", [])
             if retry_tools_used:
