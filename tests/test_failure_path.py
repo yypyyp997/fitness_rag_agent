@@ -216,6 +216,60 @@ class TestEntryBottomLine(_FailurePathTestBase):
         self.assertFalse(ao._is_degraded("正常回答内容"))
         self.assertFalse(ao._is_degraded(""))
 
+class _FixedResp:
+    """content 属性响应对象（_PlainLLM 的返回值）"""
+    def __init__(self, content):
+        self.content = content
+
+
+class _PlainLLM:
+    """固定文本假模型：invoke 返回构造时给定的文本（语义绊线判定矩阵用）"""
+    def __init__(self, text):
+        self.text = text
+
+    def invoke(self, prompt):
+        return _FixedResp(self.text)
+
+
+class TestRouteMisfireEscalation(_FailurePathTestBase):
+    """语义绊线（对应 README 踩坑 9.20）：计划题误入 direct 支路的改判升级。
+
+    判定矩阵三格钉死：计划题+缺组数回答→升级 Agent；
+    计划题+含组数回答→留直答；知识题+无组数回答→留直答（关键词门不误伤）。
+    升级后 Agent 支路注入故障模型，验证全链不炸且 route 字段如实反映产出路径。
+    """
+
+    def _run_direct_with(self, question, answer_text):
+        """路由强制 direct + 假检索器/固定文本假模型，跑完整编排链"""
+        ao._orchestrator_cache = None
+        with patch.object(rag_tool_module, "get_retriever", lambda: _FakeRetriever()), \
+             patch.object(ao, "get_llm", lambda: _PlainLLM(answer_text)), \
+             patch.object(ao, "route_question", lambda s: {"route": "direct"}):
+            return ao.run_orchestrator(question)
+
+    def test_plan_question_missing_sets_escalated(self):
+        # 计划题 + 回答缺组数×次数：绊线命中 → 升级 Agent 重跑；
+        # Agent 支路注入构建故障 → 防线3 降级，route 如实写 agent
+        ra._agent_cache = None
+        with patch.object(ra, "get_llm", side_effect=RuntimeError("模拟模型构建失败")):
+            result = self._run_direct_with("帮我制定一份增肌计划", "建议进行力量训练，注意循序渐进。")
+        self.assertEqual(set(result.keys()), {"answer", "route", "tools_used"})
+        self.assertIn("模型服务暂时不可用", result["answer"])
+        self.assertEqual(result["route"], "agent")
+        self.assertEqual(result["tools_used"], [])
+
+    def test_plan_question_with_sets_stays_direct(self):
+        # 计划题 + 回答含组数×次数：绊线不命中 → 留在直答（不误伤已达标回答）
+        result = self._run_direct_with("帮我制定一份增肌计划", "深蹲 4组×10次，循序渐进。")
+        self.assertEqual(result["route"], "direct")
+        self.assertIn("深蹲", result["answer"])
+        self.assertNotIn("暂时不可用", result["answer"])
+
+    def test_knowledge_question_without_sets_stays_direct(self):
+        # 知识题 + 回答无「组」：问题关键词门拦截 → 绊线不命中（不误伤普通问答）
+        result = self._run_direct_with("深蹲的注意事项有哪些？", "膝盖对准脚尖方向，循序渐进。")
+        self.assertEqual(result["route"], "direct")
+        self.assertIn("膝盖", result["answer"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

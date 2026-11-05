@@ -24,6 +24,10 @@ LangGraph 三个核心概念在这里的落点：
 加固后防线分层：rag_search 工具内捕获（防线1）→ 节点级 try/except（防线2/3）
 → 落库原子化（防线4）→ run_orchestrator 总兜底（防线5）。任何一层失守，
 下一层接住；即使向量库目录被删、API Key 失效，入口永远返回 dict、绝不 raise。
+语义兜底设计（对应 README 踩坑 9.20）：路由是 LLM 分类，判错支路无法归零，
+且两个方向代价不对称——direct→agent 良性（Agent 自带检索，质量基本无损），
+agent→direct 有害（无工具无护栏，计划题静默产出残次回答）。direct 支路出口
+设语义绊线：计划质检命中即改判升级 Agent 带全新工具预算重跑（见 9.20）。
 """
 from typing import TypedDict
 import time
@@ -101,6 +105,7 @@ class OrchestratorState(TypedDict):
     answer: str
     tools_used: list
     history: list
+    escalate: bool  # 语义绊线（9.20）：direct 出口计划质检命中 → 改判升级 Agent
 
 def route_question(state: OrchestratorState) -> dict:
     """路由节点：LLM判断走哪条支路，调用失败兜底走Agent（通用路径不会答不了）"""
@@ -153,9 +158,15 @@ def direct_rag_answer(state: OrchestratorState) -> dict:
             "tools_used": ["rag_search"],
         }
     answer = resp.content.strip() if isinstance(resp.content, str) else str(resp.content)
-
+    # 语义绊线（对应踩坑 9.20）：只质检成功生成的回答——降级回答已在上方提前返回，
+    # 基础设施故障不该触发升级。计划题误入直答（答里缺组数×次数）→ 置 escalate，
+    # 出口条件边改判升级 Agent 带全新工具预算重跑。触发条件 = 计划关键词 ∩ 直答支路
+    # ≈ 错判家族本身，正常知识问答恒 False 零开销（needs_plan_retry 纯函数跨支路复用）。
+    escalate = needs_plan_retry(question, answer)
+    if escalate:
+        logger.warning(f"语义绊线命中（问题: {question[:30]}），计划题误入直答，升级 Agent 重跑")
     logger.info(f"RAG直答完成，回答长度{len(answer)}字")
-    return {"answer": answer, "tools_used": ["rag_search"]}
+    return {"answer": answer, "tools_used": ["rag_search"], "escalate": escalate}
 
 def agent_answer(state: OrchestratorState) -> dict:
     """Agent支路：CP6完整思考-行动循环，并从runtime context回收工具使用统计
@@ -216,20 +227,25 @@ def agent_answer(state: OrchestratorState) -> dict:
             answer = postprocess_output(retry_result)
     except Exception as e:
         logger.error(f"Agent支路执行失败，降级返回提示: {e}")
-        return {"answer": _DEGRADED_GENERATION, "tools_used": []}
-
+        #route 如实写 agent：绊线升级场景下最终回答产自 Agent 支路（9.20）
+        return {"answer": _DEGRADED_GENERATION, "tools_used": [], "route": "agent"}
     logger.info(f"Agent支路完成，本轮使用工具: {tools_used}")
-    return {"answer": answer, "tools_used": tools_used}
+    return {"answer": answer, "tools_used": tools_used, "route": "agent"}
 
 def _route_by_state(state: OrchestratorState) -> str:
     """条件边路由函数：读state里的route字段决定去向"""
     return state.get("route", "agent")
+
+def _route_after_direct(state: OrchestratorState) -> str:
+    """direct 出口条件边（语义绊线，9.20）：escalate 命中→改判升级 agent_answer 重跑"""
+    return "escalate" if state.get("escalate") else "end"
 
 _orchestrator_cache = None
 
 def build_orchestrator():
     """构建编排工作流（全局只建一次）：
     START -> router -> (direct_answer 或 agent_answer) -> END
+    （direct 出口带语义绊线：计划质检命中 → 改判升级 agent_answer，见踩坑 9.20）
     """
     global _orchestrator_cache
     if _orchestrator_cache is None:
@@ -244,7 +260,12 @@ def build_orchestrator():
             _route_by_state,
             {"direct": "direct_answer", "agent": "agent_answer"},
         )
-        graph.add_edge("direct_answer", END)
+        # 语义绊线（9.20）：direct 出口不再直连 END，质检命中改判升级 Agent
+        graph.add_conditional_edges(
+            "direct_answer",
+            _route_after_direct,
+            {"escalate": "agent_answer", "end": END},
+        )
         graph.add_edge("agent_answer", END)
 
         _orchestrator_cache = graph.compile()
