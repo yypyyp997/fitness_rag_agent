@@ -192,6 +192,8 @@ python -m unittest discover tests -v             # 单元测试（79 例，约 0
 
 首次运行会自动构建向量库（约 1~2 分钟）。
 
+
+> **Docker 部署排障**：容器秒崩查 `docker logs fitness-agent`（八成是 .env 没配好或没用 compose 启动）；改 .env 后必须 `docker compose up -d --force-recreate` 才生效（env 只在容器创建时注入）；构建 EOF 报错与首次启动建库等待的完整预案见踩坑 9.21。
 ## 6. 知识库说明
 
 `data/raw/` 为四件套结构，共切分 **64 个 chunks**：
@@ -412,6 +414,13 @@ E2E 验证中一次计算请求 120 秒超时（平时 1.4 秒），5 秒后重�
 **验证**：新增 3 例单测钉住判定矩阵——计划题+缺组数回答→升级（Agent 支路注入构建故障，防线3 降级、route 如实变 agent，证明链路真走到 Agent）；计划题+含组数回答→留直答（不误伤已达标回答）；知识题+无组数回答→留直答（问题关键词门保护）。误伤面分析：绊线触发条件 = 计划关键词家族 ∩ 直答支路 ≈ 错判家族本身，正常知识问答恒 False 零开销。原有快乐路径与五层防线测试零影响，76+3=79 例全绿（改动副本全量复跑确认）。配套待办：评估集加 expected_route 标签算路由混淆矩阵（提示词迭代前的回归防护），生产化再加抽样裁判监测误判率。
 **教训**：① 每道防线要能回答「防的是什么」——五层防的是异常，「不炸」不等于「答对」，语义质量是独立维度；② 错判兜底按方向不对称设计：往通用路径错是安全自愈，往专用路径错才需要绊线；③ 质量护栏写成无副作用纯函数才能零成本跨支路复用——当初为 agent 支路写的 needs_plan_retry 今天直接守住了直答支路；④ 事前预防（解析不对称/失败兜底/评估迭代）+ 事后兜底（绊线改判）+ 离线观测（混淆矩阵）三层合起来，才算把「路由会错」当真。
 
+### 9.21 第二台机器部署三连坑（EOF 导出错 / .env 注入时机 / 手抄 Key）
+
+**现象**：在新 Windows 机器上从零部署，连踩三坑。① `docker compose up --build` 五步全过，最后 `exporting to image` 阶段报 `error reading from server: EOF`；② 手抄一长串 API Key 写入 .env，请求 0.41 秒快速失败返回降级文案「模型服务暂时不可用」；③ 修正 .env 后重测行为不变——一度怀疑是浏览器 F5 刷新的问题。
+**根因**：① 日志里的 `exporting attestation manifest` 暴露用的是 containerd image store——这个较新存储后端在 Windows/WSL2 上恰好以导出阶段 EOF 的方式抽风，与项目无关；② .env 是容器**启动瞬间**经 env_file 注入的，之后改磁盘文件对运行中容器零影响——而 0.4 秒快速失败本身就是诊断信号：本地鉴权立刻被拒（401），不是网络超时（会拖十几秒）；③ 浏览器 F5 只重画页面，与容器进程毫无关系——「改配置」和「让配置生效」是两个动作。
+**修复**：① 直接重跑构建（缓存生效只重做导出）；复发则 Docker Desktop Settings 关闭「Use containerd for pulling and storing images」，再不行 `docker builder prune -f` + `wsl --shutdown` 后重启 Docker；② Key 指纹核对法——主机与容器各取 Key 只输出长度/头6/尾4（`(Get-Content .env | ? {$_ -like 'DASHSCOPE_API_KEY*'}).Split('=')[1].Trim()` vs `docker exec fitness-agent python -c "import os;k=os.getenv('DASHSCOPE_API_KEY','');print(len(k),k[:6],k[-4:])"`），与主机 .env 的指纹（长度/头6/尾4）三方一致才算对，且 .env 走文件传输不走手抄不走聊天工具文字粘贴（换行/丢字符污染）；③ `docker compose up -d --force-recreate` 强制重建容器注入新环境。
+**验证**：--force-recreate 后同一条请求 latency_sec 0.41 → 6 秒，返回真实回答；向量库与记忆库均在 named volumes 中零丢失。
+**教训**：① 容器配置的生效模型——env 只在容器创建时读取，改配置必须 recreate 而不是重启进程，更不是刷新浏览器；② 错误响应时间是免费诊断信息：快速失败=本地拒绝（鉴权/参数），慢失败=远程问题（网络/超时）；③ 跨机传密钥只传文件不传文字，核对只比对指纹不输出全文；④ 图形界面的 Run 按钮不带 compose 配置（env_file/卷/端口全丢），容器操作一律走 compose 命令——GUI 只用来看状态和日志。
 ## 10. 评估体系
 
 ```bash
