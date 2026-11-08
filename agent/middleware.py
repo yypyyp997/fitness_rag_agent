@@ -26,6 +26,18 @@ MAX_QUESTION_LEN = 500
 # 计划类问题关键词：命中则切换计划模式提示词（想调行为改这里即可）
 _PLAN_KEYWORDS = ("训练计划", "健身计划", "增肌计划", "减脂计划", "课表", "帮我制定", "帮我设计", "一周")
 
+# 提示词泄露特征：出口质检扫描，命中即替换为固定话术（防注入机制层兜底）
+_LEAK_MARKERS = ("你是", "【你的能力】", "【回答规则】", "【rag_search", "【calculator", "【search_web", "使用时机")
+LEAK_FALLBACK_REPLY = "我是健身力量训练助手，只能回答健身相关的问题。请换个健身相关的问题试试。"
+
+def is_prompt_leak(answer: str) -> bool:
+    """提示词泄露质检（纯函数，无副作用）：回答命中任意泄露特征即 True，异常吞掉返回 False"""
+    try:
+        a = answer if isinstance(answer, str) else ""
+        return any(m in a for m in _LEAK_MARKERS)
+    except Exception:
+        return False
+
 # 计划模式附加指令：拼在标准系统提示词后面，约束输出结构
 _PLAN_MODE_SUFFIX = """
 【计划模式】当前用户需要训练计划，按以下优先级执行：

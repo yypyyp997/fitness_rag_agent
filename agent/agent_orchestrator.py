@@ -41,6 +41,8 @@ from agent.middleware import (
     needs_plan_retry,
     postprocess_output,
     preprocess_input,
+    is_prompt_leak,
+    LEAK_FALLBACK_REPLY
 )
 from agent.react_agent import AGENT_RECURSION_LIMIT, get_agent
 from model.factory import get_llm
@@ -201,7 +203,10 @@ def agent_answer(state: OrchestratorState) -> dict:
         )
         tools_used = ctx.get("tools_used", [])
         answer = postprocess_output(result)
-
+        # 防注入机制层（对应踩坑 9.22）：出口质检扫描提示词泄露特征，命中即替换为固定话术
+        if is_prompt_leak(answer):
+            logger.warning(f"提示词泄露质检命中（问题: {question[:30]}），已替换为固定话术")
+            answer = LEAK_FALLBACK_REPLY
         # 计划模式运行时护栏：命中则带一句提醒重跑一次（最多1次，结果直接采用）
         if needs_plan_retry(question, answer):
             logger.warning(

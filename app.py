@@ -175,6 +175,9 @@ if prompt:
         start = time.perf_counter()
         parts = []
         meta = None
+        # 思考状态卡：带实时计时（对应 9.22 UX 打磨），收尾自动折叠
+        status_card = st.status("思考中...", expanded=True)
+        timer = status_card.empty()
         try:
             sid = _session_id() if use_memory else None
             for chunk in stream_orchestrator(prompt, session_id=sid):
@@ -183,8 +186,12 @@ if prompt:
                 else:
                     parts.append(chunk)
                     placeholder.markdown("".join(parts) + "▌")  # 光标符号增强"正在打字"感
+                    timer.metric("已思考", f"{time.perf_counter() - start:.1f} 秒")
             placeholder.markdown("".join(parts))  # 收尾：去掉光标符号
+            timer.empty()  # 回答出来了，撤掉计时器
+            status_card.update(label="完成", state="complete", expanded=False)
         except Exception as e:
+            status_card.update(label="出错", state="error", expanded=True)
             placeholder.markdown(f"出错了：{e}\n\n详细日志见 logs/run.log")
             meta = None
 
